@@ -6,83 +6,47 @@ import {
   setWebhookSchema,
   sessionIdSchema,
 } from "../validations/session.validation.js";
+import { StatusCodes } from "http-status-codes";
+import { NotFoundError } from "../utils/error-handlers.js";
 
 export async function createSession(req: Request, res: Response) {
-  const result = createSessionSchema.safeParse(req.body);
-  if (!result.success) {
-    return res.status(400).json({ error: result.error.format() });
-  }
-
-  try {
-    const data = await sessionService.createSession(result.data.name);
-    res.json(data);
-  } catch (err) {
-    res.status(500).json({ error: "Erro ao iniciar a sessão" });
-  }
+  const data = createSessionSchema.parse(req.body);
+  await sessionService.createSession(data.name);
+  res.sendStatus(StatusCodes.CREATED);
 }
 
 export async function getQRCode(req: Request, res: Response) {
-  const result = sessionIdSchema.safeParse(req.params);
-  if (!result.success) {
-    return res.status(400).json({ error: result.error.format() });
-  }
-
-  const qr = await sessionService.getQRCode(result.data.sessionId);
-  if (qr) res.json({ qr });
-  else res.status(404).json({ error: "QR Code não disponível" });
+  const { sessionId } = sessionIdSchema.parse(req.params);
+  const qr = await sessionService.getQRCode(sessionId);
+  if (qr) return res.status(StatusCodes.OK).json({ qr });
+  throw new NotFoundError("QR Code não disponível");
 }
 
 export async function sendMessage(req: Request, res: Response) {
-  const result = sendMessageSchema.safeParse(req.body);
-  if (!result.success) {
-    return res.status(400).json({ error: result.error.format() });
-  }
-
-  try {
-    const { sessionId, to, message } = result.data;
-    await sessionService.sendMessage(sessionId, to, message);
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: "Erro ao enviar mensagem" });
-  }
+  const data = sendMessageSchema.parse(req.body);
+  await sessionService.sendMessage(data.sessionId, data.to, data.message);
+  res.sendStatus(StatusCodes.OK);
 }
 
 export async function setWebhook(req: Request, res: Response) {
-  const result = setWebhookSchema.safeParse(req.body);
-  if (!result.success) {
-    return res.status(400).json({ error: result.error.format() });
-  }
-
-  const { sessionId, webhookUrl } = result.data;
-  await sessionService.setWebhook(sessionId, webhookUrl);
-  res.json({ message: "Webhook atualizado" });
+  const data = setWebhookSchema.parse(req.body);
+  await sessionService.setWebhook(data.sessionId, data.webhookUrl);
+  res.sendStatus(StatusCodes.OK);
 }
 
 export async function deleteSession(req: Request, res: Response) {
-  const result = sessionIdSchema.safeParse(req.params);
-  if (!result.success) {
-    return res.status(400).json({ error: result.error.format() });
-  }
-
-  try {
-    await sessionService.deleteSession(result.data.sessionId);
-    res.json({ message: "Sessão desconectada" });
-  } catch {
-    res.status(500).json({ error: "Erro ao desconectar sessão" });
-  }
+  const { sessionId } = sessionIdSchema.parse(req.params);
+  await sessionService.deleteSession(sessionId);
+  res.sendStatus(StatusCodes.OK);
 }
 
 export async function refreshQR(req: Request, res: Response) {
-  const result = sessionIdSchema.safeParse(req.body);
-  if (!result.success) {
-    return res.status(400).json({ error: result.error.format() });
-  }
-
-  await sessionService.refreshQR(result.data.sessionId);
-  res.json({ message: "QR atualizado" });
+  const { sessionId } = sessionIdSchema.parse(req.body);
+  await sessionService.refreshQR(sessionId);
+  res.sendStatus(StatusCodes.OK);
 }
 
 export async function listSessions(req: Request, res: Response) {
   const sessions = await sessionService.listSessions();
-  res.json(sessions);
+  res.status(StatusCodes.OK).json(sessions);
 }

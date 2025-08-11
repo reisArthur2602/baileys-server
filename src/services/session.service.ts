@@ -2,110 +2,143 @@ import {
   makeWASocket,
   useMultiFileAuthState,
   DisconnectReason,
-  jidDecode,
-type WASocket,
+  type WASocket,
 } from "@whiskeysockets/baileys";
-
 import qrcode from "qrcode";
+import fs from "fs-extra";
+import path from "path";
 import crypto from "crypto";
 import axios from "axios";
-import path from "path";
-import prisma from "../config/prisma.js";
 
-import type { SessionStore } from "../types/index.js";
-import type { Boom } from "@hapi/boom"
+import * as sessionRepo from "../repositories/session.repository.js";
+import { parseIncomingMessage } from "../utils/parse-incoming-message.js";
+import { NotFoundError, BadRequestError } from "../utils/error-handlers.js";
 
-const sessions: SessionStore = {};
+type SessionStoreItem = {
+  sock: WASocket;
+  qrCode: string | null;
+  webhookUrl: string | null;
+  connecting?: boolean;
+  deleting?: boolean;
+};
+
+const sessions: Record<string, SessionStoreItem> = {};
+const reconnecting: Record<string, boolean> = {};
 
 export async function createSession(name: string) {
+  if (!name) throw new BadRequestError("Nome da sessão é obrigatório");
   const sessionId = crypto.randomUUID();
   await startSession(sessionId, name);
-  return { sessionId, name, message: "Sessão criada" };
 }
 
 export async function startSession(sessionId: string, name?: string) {
+  if (sessions[sessionId]?.connecting) {
+    console.log(`⚠️ Sessão ${sessionId} já está conectando...`);
+    return;
+  }
+
+  sessions[sessionId] = {
+    sock: undefined as unknown as WASocket,
+    qrCode: null,
+    webhookUrl: null,
+    connecting: true,
+  };
+
   const sessionPath = path.resolve(`./sessions/${sessionId}`);
   const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
 
-  const dbSession = await prisma.session.findUnique({ where: { id: sessionId } });
+  const dbSession = await sessionRepo.findSessionById(sessionId);
+  sessions[sessionId].webhookUrl = dbSession?.webhookUrl || null;
 
-  sessions[sessionId] = {
-    sock: undefined as unknown as WASocket, 
-    qrCode: null,
-    webhookUrl: dbSession?.webhookUrl || null,
-  };
+  if (sessions[sessionId]?.sock) {
+    try {
+      sessions[sessionId].sock.end(undefined);
+      sessions[sessionId].sock.ws?.close();
+    } catch (err) {
+      console.error(`Erro ao fechar socket da sessão ${sessionId}:`, err);
+    }
+  }
 
   const sock = makeWASocket({ auth: state });
   sessions[sessionId].sock = sock;
 
-  await prisma.session.upsert({
-    where: { id: sessionId },
-    update: {
+  await sessionRepo.upsertSession({
+    id: sessionId,
+    name: name || dbSession?.name || null,
     webhookUrl: dbSession?.webhookUrl || null,
     connected: false,
-  
-},
-    create: {
-      id: sessionId,
-      name: name || null,
-      connected: false,
-      qrCode: null,
-      webhookUrl: dbSession?.webhookUrl || null,
-    },
+    qrCode: null,
   });
 
-  sock.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
-    if (qr) {
-      sessions[sessionId]!.qrCode = qr;
-      await prisma.session.update({
-        where: { id: sessionId },
-        data: { qrCode: qr, connected: false },
-      });
-    }
-
-    if (connection === "close") {
-      const error = lastDisconnect?.error as Boom | undefined;
-    const statusCode = (error as any)?.output?.statusCode;
-
-      if (statusCode === DisconnectReason.loggedOut) {
-        delete sessions[sessionId];
-        await prisma.session.delete({ where: { id: sessionId } });
-      } else {
-        await startSession(sessionId, name);
+  sock.ev.on(
+    "connection.update",
+    async ({ connection, lastDisconnect, qr }) => {
+      if (qr && qr !== sessions[sessionId]!.qrCode) {
+        sessions[sessionId]!.qrCode = qr;
+        await sessionRepo.updateSession(sessionId, {
+          qrCode: qr,
+          connected: false,
+        });
       }
-    } else if (connection === "open") {
-      sessions[sessionId]!.qrCode = null;
-      await prisma.session.update({
-        where: { id: sessionId },
-        data: { connected: true, qrCode: null },
-      });
+
+      switch (connection) {
+        case "close":
+          if (sessions[sessionId]?.deleting) return;
+
+          const error = lastDisconnect?.error as any;
+          const statusCode = error?.output?.statusCode;
+
+          if (statusCode === DisconnectReason.loggedOut) {
+            console.log(
+              `⚠️ Logout detectado na sessão ${sessionId}. Limpando credenciais...`
+            );
+            try {
+              sock.end(undefined);
+              sock.ws?.close();
+            } catch (err) {
+              console.error("Erro ao fechar socket:", err);
+            }
+
+            await fs.remove(sessionPath);
+            await fs.ensureDir(sessionPath);
+
+            await sessionRepo.updateSession(sessionId, {
+              connected: false,
+              qrCode: null,
+            });
+
+            console.log(`✅ Sessão ${sessionId} limpa. Aguardando novo QR...`);
+          } else if (!reconnecting[sessionId]) {
+            reconnecting[sessionId] = true;
+            console.log(`♻️ Reconectando sessão ${sessionId}...`);
+
+            await startSession(sessionId, name);
+            reconnecting[sessionId] = false;
+          }
+          break;
+        case "open":
+          sessions[sessionId]!.qrCode = null;
+          await sessionRepo.updateSession(sessionId, {
+            connected: true,
+            qrCode: null,
+          });
+          console.log(`✅ Sessão ${sessionId} conectada`);
+          break;
+      }
     }
-  });
+  );
 
   sock.ev.on("messages.upsert", async ({ messages }) => {
     const msg = messages[0];
     if (!msg?.message || msg.key.fromMe) return;
 
-    const text =
-      msg.message.conversation ||
-      msg.message.extendedTextMessage?.text ||
-      msg.message.imageMessage?.caption ||
-      "";
+    const parsedMessage = parseIncomingMessage(msg, sessionId);
+    console.log(parsedMessage);
 
     const webhookUrl = sessions[sessionId]!.webhookUrl;
-    const data = {
-      sessionId,
-      from: msg.key.remoteJid,
-      fromUser: jidDecode(msg.key.remoteJid || "")?.user || "",
-      name: msg.pushName || "Desconhecido",
-      message: text,
-      type: Object.keys(msg.message)[0],
-      timestamp: msg.messageTimestamp,
-    };
-
     if (webhookUrl) {
       try {
-        await axios.post(webhookUrl, data);
+        await axios.post(webhookUrl, parsedMessage);
       } catch (err: any) {
         console.error("Erro webhook:", err?.message);
       }
@@ -113,80 +146,77 @@ export async function startSession(sessionId: string, name?: string) {
   });
 
   sock.ev.on("creds.update", saveCreds);
+
+  sessions[sessionId].connecting = false;
 }
 
 export async function getQRCode(sessionId: string): Promise<string | null> {
   const session = sessions[sessionId];
+  if (session?.qrCode) return await qrcode.toDataURL(session.qrCode);
 
-
-  if (session?.qrCode) {
-    return await qrcode.toDataURL(session.qrCode);
-  }
-
- 
-  const dbSession = await prisma.session.findUnique({ where: { id: sessionId } });
-
-  if (dbSession?.qrCode) {
-    return await qrcode.toDataURL(dbSession.qrCode);
-  }
-
-  return null;
+  const dbSession = await sessionRepo.findSessionById(sessionId);
+  return dbSession?.qrCode ? await qrcode.toDataURL(dbSession.qrCode) : null;
 }
 
-export async function sendMessage(sessionId: string, to: string, message: string) {
+export async function sendMessage(
+  sessionId: string,
+  to: string,
+  message: string
+) {
   const session = sessions[sessionId];
-  if (!session || !session.sock) throw new Error("Sessão não encontrada");
- 
+  if (!session || !session.sock)
+    throw new NotFoundError("Sessão do usuário não foi encontrada");
+
   await session.sock.sendMessage(`${to}@s.whatsapp.net`, { text: message });
 }
 
 export async function setWebhook(sessionId: string, webhookUrl: string) {
   const session = sessions[sessionId];
-  if (!session) throw new Error("Sessão não encontrada");
+  if (!session) throw new NotFoundError("Sessão do usuário não foi encontrada");
+
   session.webhookUrl = webhookUrl;
-  await prisma.session.update({ where: { id: sessionId }, data: { webhookUrl } });
+  await sessionRepo.updateSession(sessionId, { webhookUrl });
 }
 
 export async function deleteSession(sessionId: string) {
   const session = sessions[sessionId];
-  if (!session || !session.sock) throw new Error("Sessão não encontrada");
+  if (!session || !session.sock)
+    throw new NotFoundError("Sessão do usuário não foi encontrada");
+  session.deleting = true;
   await session.sock.logout();
-  delete sessions[sessionId];
-  await prisma.session.delete({ where: { id: sessionId } });
+  const sessionPath = path.resolve(`./sessions/${sessionId}`);
+  await fs.remove(sessionPath);
+  await sessionRepo.deleteSession(sessionId);
 }
 
 export async function refreshQR(sessionId: string) {
-  const session = sessions[sessionId];
+  const sessionPath = path.resolve(`./sessions/${sessionId}`);
 
-  if (session && session.sock) {
-    try {
-    
-      session.sock.ws.close();
-    } catch (err) {
-      console.error("Erro ao fechar socket:", err);
-    }
+  if (sessions[sessionId]?.sock) {
+    sessions[sessionId].sock.end(undefined);
+    sessions[sessionId].sock.ws?.close();
   }
+
+  await fs.remove(sessionPath);
+  await fs.ensureDir(sessionPath);
+
+  await sessionRepo.updateSession(sessionId, {
+    connected: false,
+    qrCode: null,
+  });
 
   await startSession(sessionId);
 }
 
-
 export async function listSessions() {
-  return await prisma.session.findMany();
+  return sessionRepo.listSessions();
 }
 
 export async function loadSessionsOnStartup() {
-  const savedSessions = await prisma.session.findMany();
-
+  const savedSessions = await sessionRepo.listSessions();
   for (const session of savedSessions) {
-    if (session.connected) {
-      try {
-        await startSession(session.id, session.name || undefined);
-        sessions[session.id]!.webhookUrl = session.webhookUrl || null;
-        console.log(`✅ Sessão restaurada: ${session.id}`);
-      } catch (err) {
-        console.error(`❌ Erro ao restaurar sessão ${session.id}:`, err);
-      }
-    }
+    await startSession(session.id, session.name || undefined);
+    sessions[session.id]!.webhookUrl = session.webhookUrl || null;
+    console.log(`✅ Sessão restaurada: ${session.id}`);
   }
 }
