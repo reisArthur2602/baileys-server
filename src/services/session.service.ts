@@ -79,7 +79,7 @@ export async function startSession(sessionId: string, name?: string) {
 
           if (statusCode === DisconnectReason.loggedOut) {
             console.log(`⚠️ Logout detectado na sessão ${sessionId}.`);
-            // Apenas marcar como desconectada, sem apagar arquivos
+  
             await sessionRepo.updateSession(sessionId, {
               connected: false,
               qrCode: null,
@@ -109,6 +109,22 @@ export async function startSession(sessionId: string, name?: string) {
   sock.ev.on("messages.upsert", async ({ messages }) => {
     const msg = messages[0];
     if (!msg?.message || msg.key.fromMe) return;
+
+    const ignoredTypes = [
+      "senderKeyDistributionMessage",
+      "status@broadcast",
+      "protocolMessage",
+      "reactionMessage",
+      "ephemeralMessage",
+    ];
+    
+    const messageType = Object.keys(msg.message)[0];
+
+    if (
+      ignoredTypes.includes(messageType!) ||
+      msg.key.remoteJid?.endsWith("@g.us")
+    )
+      return;
 
     const parsedMessage = parseIncomingMessage(msg, sessionId);
     console.log(parsedMessage);

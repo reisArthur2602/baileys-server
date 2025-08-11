@@ -1,29 +1,3 @@
-# 📱 WhatsApp API v1 - Baileys
-
-<h1 align="center" style="font-weight: bold;">WhatsApp API v1 🚀</h1>
-
-<p align="center">
-  <a href="#tech">Tecnologias</a> •
-  <a href="#started">Primeiros passos</a> •
-  <a href="#session-routes">Session Endpoints</a> •
-  <a href="#message-routes">Message Endpoints</a> •
-  <a href="#webhook-routes">Webhook Endpoints</a>
-</p>
-
----
-
-## 💻 Tecnologias
-
-- Node.js
-- Express
-- @whiskeysockets/baileys
-- qrcode
-- axios
-
----
-
-## 🚀 Primeiros Passos
-
 ### Pré-requisitos
 
 - [Node.js](https://nodejs.org/pt)
@@ -33,7 +7,7 @@
 
 ```bash
 npm init -y
-npm install express @whiskeysockets/baileys qrcode axios
+npm install
 ```
 
 ### Iniciar o servidor
@@ -41,8 +15,6 @@ npm install express @whiskeysockets/baileys qrcode axios
 ```bash
 npm run dev
 ```
-
----
 
 ## 📍 Endpoints
 
@@ -52,6 +24,7 @@ npm run dev
 | `GET /qr/:sessionId`                  | Obter QR code para autenticação           |
 | `DELETE /session/:sessionId`          | Encerrar uma sessão                       |
 | `POST /session/:sessionId/refresh-qr` | Gerar novo QR code                        |
+| `PATCH /session/:sessionId/logout`    | Realizar logout da sessão                 |
 | `POST /send`                          | Enviar mensagem                           |
 | `POST /set-webhook`                   | Configurar webhook para receber mensagens |
 
@@ -60,56 +33,46 @@ npm run dev
 **Request:**
 
 ```json
-{
-  "sessionId": "minha-sessao-123"
+body: {
+  "name": "minha-sessao"
 }
 ```
 
-**Response:**
-
-```json
-{
-  "message": "Sessão minha-sessao-123 iniciada. Escaneie o QR code via /qr/minha-sessao-123"
-}
-```
-
----
+**Response: 201 Created**
 
 ### GET /qr/:sessionId
 
-**Response:**
+**Request:**
 
 ```json
-{
-  "qr": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA..."
+params: {
+  "sessionId": "minha-sessao"
 }
 ```
-
----
 
 ### DELETE /session/:sessionId
 
-**Response:**
+**Request:**
 
 ```json
-{
-  "message": "Sessão minha-sessao-123 desconectada com sucesso"
+params: {
+  "sessionId": "minha-sessao"
 }
 ```
 
----
+**Response: 200 OK**
 
 ### POST /session/:sessionId/refresh-qr
 
-**Response:**
+**Request:**
 
 ```json
-{
-  "message": "Sessão minha-sessao-123 reiniciada. Novo QR code gerado."
+params: {
+  "sessionId": "minha-sessao"
 }
 ```
 
----
+**Response: 200 OK**
 
 ### POST /send
 
@@ -117,46 +80,32 @@ npm run dev
 
 ```json
 {
-  "sessionId": "minha-sessao-123",
+  "sessionId": "minha-sessao",
   "to": "5511999999999",
   "message": "Olá, isso é um teste!"
 }
 ```
 
-**Response:**
-
-```json
-{
-  "success": true,
-  "to": "5511999999999",
-  "message": "Olá, isso é um teste!"
-}
-```
+**Response: : 200 OK**
 
 ### POST /set-webhook
 
 **Request:**
 
 ```json
-{
-  "sessionId": "minha-sessao-123",
+body:{
+  "sessionId": "minha-sessao",
   "webhookUrl": "https://meu-webhook.com/receber-mensagens"
 }
 ```
 
-**Response:**
-
-```json
-{
-  "message": "Webhook definido para sessão minha-sessao-123"
-}
-```
-
----
+**Response: 200 OK**
 
 ### Estrutura do Webhook
 
 Quando configurado, o webhook receberá mensagens no seguinte formato:
+
+**Mensagem de texto:**
 
 ```json
 {
@@ -167,14 +116,57 @@ Quando configurado, o webhook receberá mensagens no seguinte formato:
   "name": "Arthur",
   "text": "Olá, como vai?",
   "type": "conversation",
-  "timestamp": 1634567890
+  "isForwarded": false,
+  "timestamp": "Mon Aug 11 2025 11:16:42 GMT-0300 (Brasilia Standard Time)"
 }
 ```
 
----
+**Imagem:**
+
+```json
+{
+  "sessionId": "minha-sessao",
+  "messageId": "3EB0C1D95A5B8",
+  "from": "5521975140550@s.whatsapp.net",
+  "fromUser": "5521975140550",
+  "name": "Arthur",
+  "text": "",
+  "type": "imageMessage",
+  "isForwarded": false,
+  "timestamp": "Mon Aug 11 2025 11:16:42 GMT-0300 (Brasilia Standard Time)",
+  "image": {
+    "url": "https://example.com/image.jpg",
+    "mimetype": "image/jpeg",
+    "size": 102400,
+    "caption": "Foto da reunião"
+  }
+}
+```
+
+**Localização:**
+
+```json
+{
+  "sessionId": "minha-sessao",
+  "messageId": "3EB0C1D95A5B8",
+  "from": "5521975140550@s.whatsapp.net",
+  "fromUser": "5521975140550",
+  "name": "Arthur",
+  "text": "",
+  "type": "locationMessage",
+  "isForwarded": false,
+  "timestamp": "Mon Aug 11 2025 11:16:42 GMT-0300 (Brasilia Standard Time)",
+  "location": {
+    "latitude": -23.55052,
+    "longitude": -46.633308,
+    "name": "São Gonçalo",
+    "address": "Rua Laureano Rosa",
+    "mode": "manual"
+  }
+}
+```
 
 ⚠️ **Observações Importantes**
 
 - As sessões são armazenadas na pasta `./sessions/`
 - Mantenha o `sessionId` consistente para reutilizar a mesma sessão
-- Mensagens só serão enviadas/recebidas após a sessão estar autenticada
