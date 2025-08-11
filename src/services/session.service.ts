@@ -1,9 +1,4 @@
-import {
-  makeWASocket,
-  useMultiFileAuthState,
-  DisconnectReason,
-  type WASocket,
-} from "@whiskeysockets/baileys";
+import { DisconnectReason, type WASocket } from "@whiskeysockets/baileys";
 import qrcode from "qrcode";
 import fs from "fs-extra";
 import path from "path";
@@ -13,9 +8,10 @@ import axios from "axios";
 import * as sessionRepo from "../repositories/session.repository.js";
 import { parseIncomingMessage } from "../utils/parse-incoming-message.js";
 import { NotFoundError, BadRequestError } from "../utils/error-handlers.js";
+import { createBaileysSession } from "../config/baileys.config.js";
 
 type SessionStoreItem = {
-  sock: WASocket;
+  sock?: WASocket;
   qrCode: string | null;
   webhookUrl: string | null;
   connecting?: boolean;
@@ -44,22 +40,15 @@ export async function startSession(sessionId: string, name?: string) {
     connecting: true,
   };
 
-  const sessionPath = path.resolve(`./sessions/${sessionId}`);
-  const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
-
   const dbSession = await sessionRepo.findSessionById(sessionId);
   sessions[sessionId].webhookUrl = dbSession?.webhookUrl || null;
 
   if (sessions[sessionId]?.sock) {
-    try {
-      sessions[sessionId].sock.end(undefined);
-      sessions[sessionId].sock.ws?.close();
-    } catch (err) {
-      console.error(`Erro ao fechar socket da sessão ${sessionId}:`, err);
-    }
+    sessions[sessionId].sock.end(undefined);
+    sessions[sessionId].sock.ws?.close();
   }
 
-  const sock = makeWASocket({ auth: state });
+  const { sock, saveCreds } = await createBaileysSession(sessionId);
   sessions[sessionId].sock = sock;
 
   await sessionRepo.upsertSession({
@@ -89,33 +78,22 @@ export async function startSession(sessionId: string, name?: string) {
           const statusCode = error?.output?.statusCode;
 
           if (statusCode === DisconnectReason.loggedOut) {
-            console.log(
-              `⚠️ Logout detectado na sessão ${sessionId}. Limpando credenciais...`
-            );
-            try {
-              sock.end(undefined);
-              sock.ws?.close();
-            } catch (err) {
-              console.error("Erro ao fechar socket:", err);
-            }
-
-            await fs.remove(sessionPath);
-            await fs.ensureDir(sessionPath);
-
+            console.log(`⚠️ Logout detectado na sessão ${sessionId}.`);
+            // Apenas marcar como desconectada, sem apagar arquivos
             await sessionRepo.updateSession(sessionId, {
               connected: false,
               qrCode: null,
             });
-
-            console.log(`✅ Sessão ${sessionId} limpa. Aguardando novo QR...`);
+            sessions[sessionId]!.qrCode = null;
+            console.log(`ℹ️ Sessão ${sessionId} desconectada.`);
           } else if (!reconnecting[sessionId]) {
             reconnecting[sessionId] = true;
             console.log(`♻️ Reconectando sessão ${sessionId}...`);
-
             await startSession(sessionId, name);
             reconnecting[sessionId] = false;
           }
           break;
+
         case "open":
           sessions[sessionId]!.qrCode = null;
           await sessionRepo.updateSession(sessionId, {
@@ -182,11 +160,43 @@ export async function deleteSession(sessionId: string) {
   const session = sessions[sessionId];
   if (!session || !session.sock)
     throw new NotFoundError("Sessão do usuário não foi encontrada");
+
   session.deleting = true;
-  await session.sock.logout();
+
+  try {
+    await session.sock.logout();
+  } catch (err) {
+    console.error(`Erro ao deslogar sessão ${sessionId}:`, err);
+  }
+
   const sessionPath = path.resolve(`./sessions/${sessionId}`);
   await fs.remove(sessionPath);
   await sessionRepo.deleteSession(sessionId);
+
+  delete sessions[sessionId];
+  console.log(`✅ Sessão ${sessionId} removida completamente.`);
+}
+
+export async function logoutSession(sessionId: string) {
+  const session = sessions[sessionId];
+  if (!session || !session.sock) {
+    throw new NotFoundError("Sessão do usuário não foi encontrada");
+  }
+
+  await session.sock.logout();
+  const sessionPath = path.resolve(`./sessions/${sessionId}`);
+  await fs.remove(sessionPath);
+
+  await sessionRepo.updateSession(sessionId, {
+    connected: false,
+    qrCode: null,
+  });
+
+  delete sessions[sessionId];
+
+  await startSession(sessionId);
+
+  console.log(`✅ Sessão ${sessionId} deslogada e pronta para novo login.`);
 }
 
 export async function refreshQR(sessionId: string) {

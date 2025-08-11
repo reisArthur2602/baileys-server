@@ -40,6 +40,13 @@ export async function deleteSession(req: Request, res: Response) {
   res.sendStatus(StatusCodes.OK);
 }
 
+
+export async function logoutSession(req: Request, res: Response) {
+  const { sessionId } = sessionIdSchema.parse(req.params);
+  await sessionService.logoutSession(sessionId);
+  res.sendStatus(StatusCodes.OK);
+}
+
 export async function refreshQR(req: Request, res: Response) {
   const { sessionId } = sessionIdSchema.parse(req.body);
   await sessionService.refreshQR(sessionId);
