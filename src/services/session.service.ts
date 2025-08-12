@@ -79,7 +79,7 @@ export async function startSession(sessionId: string, name?: string) {
 
           if (statusCode === DisconnectReason.loggedOut) {
             console.log(`⚠️ Logout detectado na sessão ${sessionId}.`);
-  
+
             await sessionRepo.updateSession(sessionId, {
               connected: false,
               qrCode: null,
@@ -117,12 +117,13 @@ export async function startSession(sessionId: string, name?: string) {
       "reactionMessage",
       "ephemeralMessage",
     ];
-    
+
     const messageType = Object.keys(msg.message)[0];
 
     if (
       ignoredTypes.includes(messageType!) ||
-      msg.key.remoteJid?.endsWith("@g.us")
+      msg.key.remoteJid?.endsWith("@g.us") ||
+      msg.key.remoteJid?.endsWith("@newsletter")
     )
       return;
 
