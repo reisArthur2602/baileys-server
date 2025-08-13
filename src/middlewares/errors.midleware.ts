@@ -9,13 +9,28 @@ export function errorsMiddleware(
   response: Response,
   next: NextFunction
 ) {
-  if (error instanceof ZodError)
-    return response
-      .status(StatusCodes.BAD_REQUEST)
-      .json({ message: "Preencha os dados da requisição corretamente" });
+  let statusCode = error.statusCode ?? StatusCodes.INTERNAL_SERVER_ERROR;
+  let errorResponse: { message: string }[] = [];
 
-  const statusCode = error.statusCode ?? StatusCodes.INTERNAL_SERVER_ERROR;
-  const message = error.message ?? StatusCodes.INTERNAL_SERVER_ERROR;
-  console.error({ status: error.statusCode, message });
-  return response.status(statusCode).json({ message });
+  if (error instanceof ZodError) {
+    statusCode = StatusCodes.BAD_REQUEST;
+
+    const flattened = error.flatten();
+    const fieldErrors = Object.values(flattened.fieldErrors)
+      .flat()
+      .filter((msg): msg is string => typeof msg === "string");
+    const formErrors = flattened.formErrors.filter(
+      (msg): msg is string => typeof msg === "string"
+    );
+
+    errorResponse = [...fieldErrors, ...formErrors].map((message) => ({
+      message,
+    }));
+  } else {
+    errorResponse = [{ message: error.message ?? "Internal server error" }];
+  }
+
+  console.error({ status: statusCode, errors: errorResponse });
+
+  return response.status(statusCode).json({ error: errorResponse });
 }

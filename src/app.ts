@@ -18,6 +18,25 @@ app.use("/", sessionRoutes);
 
 app.use(errorsMiddleware);
 
+app.get("/file/:id", (req, res) => {
+  const messageId = req.params.id;
+
+
+  const originalUrl = req.query.url as string;
+
+  if (!originalUrl) return res.status(400).send("URL não informada");
+
+
+  res.redirect(originalUrl);
+});
+
+
+
+
+
+
+
+
 app.listen(PORT, async () => {
   console.log(`🚀 Servidor rodando na porta ${PORT}`);
   await loadSessionsOnStartup();

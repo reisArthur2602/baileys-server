@@ -127,7 +127,7 @@ export async function startSession(sessionId: string, name?: string) {
     )
       return;
 
-    const parsedMessage = parseIncomingMessage(msg, sessionId);
+    const parsedMessage = await parseIncomingMessage(msg, sessionId);
     console.log(parsedMessage);
 
     const webhookUrl = sessions[sessionId]!.webhookUrl;
