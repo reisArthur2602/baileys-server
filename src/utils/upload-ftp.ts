@@ -1,16 +1,25 @@
 import { Readable } from "stream";
 import { createFtpClient } from "../config/ftp-config.js";
 
-export async function uploadToFtp(buffer: Buffer, fileName: string) {
-  const path = "/media";
+export async function uploadToFtp(buffer: Buffer, fileName: string, path: string) {
+  
   const client = await createFtpClient(path);
-  const host = process.env.FTP_HOST as string;
+  
+  
+  const publicBaseUrl = "https://mastertelecom-claro.com.br/";
 
   try {
     const stream = Readable.from(buffer);
     await client.uploadFrom(stream, fileName);
-    return `ftp://${host}/media/${fileName}`;
-    // return `https://${host}/${path}/${fileName}`;
+
+   
+    const relativePath = path.replace("/public_html", "").replace(/\/+$/, "");
+
+  
+    return `${publicBaseUrl}${relativePath}/${fileName}`;
+  } catch (err) {
+    console.error("Erro ao fazer upload FTP:", err);
+    return null;
   } finally {
     client.close();
   }

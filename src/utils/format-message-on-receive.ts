@@ -2,6 +2,7 @@ import { jidDecode, type proto } from "@whiskeysockets/baileys";
 import { getMediaBuffer } from "./get-media-buffer.js";
 import { uploadToFtp } from "./upload-ftp.js";
 
+
 type Sequence = { low: number; high: number; unsigned: boolean };
 
 export async function formatMessageOnReceive(
@@ -80,7 +81,7 @@ export async function formatMessageOnReceive(
       const docMsg = msg.message?.documentMessage;
       const fileBuffer = await getMediaBuffer(msg);
       if (!fileBuffer) return;
-      const url = await uploadToFtp(fileBuffer.buffer, fileBuffer.fileName);
+      const url = await uploadToFtp(fileBuffer.buffer, fileBuffer.fileName , "/public_html/arthurteste/documentos" );
 
       return {
         ...base,
@@ -99,8 +100,8 @@ export async function formatMessageOnReceive(
       const imgMsg = msg.message?.imageMessage;
       const fileBuffer = await getMediaBuffer(msg);
       if (!fileBuffer) return;
-      const url = await uploadToFtp(fileBuffer.buffer, fileBuffer.fileName);
-
+      const url = await uploadToFtp(fileBuffer.buffer, fileBuffer.fileName, "/public_html/arthurteste/imagem_rosto");
+ 
       return {
         ...base,
         image: {
@@ -119,7 +120,7 @@ export async function formatMessageOnReceive(
       const audioMsg = msg.message?.audioMessage;
       const fileBuffer = await getMediaBuffer(msg);
       if (!fileBuffer) return;
-      const url = await uploadToFtp(fileBuffer.buffer, fileBuffer.fileName);
+      const url = await uploadToFtp(fileBuffer.buffer, fileBuffer.fileName , "/public_html/arthurteste");
 
       return {
         ...base,
