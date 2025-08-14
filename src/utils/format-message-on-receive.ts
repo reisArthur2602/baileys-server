@@ -4,7 +4,7 @@ import { uploadToFtp } from "./upload-ftp.js";
 
 type Sequence = { low: number; high: number; unsigned: boolean };
 
-export async function parseIncomingMessage(
+export async function formatMessageOnReceive(
   msg: proto.IWebMessageInfo,
   sessionId: string
 ) {

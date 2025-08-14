@@ -6,20 +6,54 @@ import crypto from "crypto";
 import axios from "axios";
 
 import * as sessionRepo from "../repositories/session.repository.js";
-import { parseIncomingMessage } from "../utils/parse-incoming-message.js";
+import { formatMessageOnReceive } from "../utils/format-message-on-receive.js";
 import { NotFoundError, BadRequestError } from "../utils/error-handlers.js";
 import { createBaileysSession } from "../config/baileys.config.js";
+import { formatMessageOnUpdate } from "../utils/format-message-on-update.js";
 
 type SessionStoreItem = {
   sock?: WASocket;
   qrCode: string | null;
-  webhookUrl: string | null;
+  onReceive_webhookUrl: string | null;
+  onSend_webhookUrl: string | null;
+  onUpdateStatus_webhookUrl: string | null;
   connecting?: boolean;
   deleting?: boolean;
 };
 
 const sessions: Record<string, SessionStoreItem> = {};
 const reconnecting: Record<string, boolean> = {};
+
+async function sendToWebhook(
+  sessionId: string,
+  payload: any,
+  type: "receive" | "send" | "update"
+) {
+  const session = sessions[sessionId];
+  if (!session) throw new NotFoundError("Sessão do usuário não foi encontrada");
+
+  let webhookUrl: string | null = null;
+
+  switch (type) {
+    case "receive":
+      webhookUrl = session.onReceive_webhookUrl;
+      break;
+    case "send":
+      webhookUrl = session.onSend_webhookUrl;
+      break;
+    case "update":
+      webhookUrl = session.onUpdateStatus_webhookUrl;
+      break;
+  }
+
+  if (!webhookUrl) return;
+
+  try {
+    await axios.post(webhookUrl, payload);
+  } catch (err: any) {
+    console.error(`Erro webhook (${type}):`, err.message);
+  }
+}
 
 export async function startSession({
   sessionId,
@@ -36,12 +70,18 @@ export async function startSession({
   sessions[sessionId] = {
     sock: undefined as unknown as WASocket,
     qrCode: null,
-    webhookUrl: null,
+    onReceive_webhookUrl: null,
+    onSend_webhookUrl: null,
+    onUpdateStatus_webhookUrl: null,
     connecting: true,
   };
 
   const dbSession = await sessionRepo.findSessionById({ sessionId });
-  sessions[sessionId].webhookUrl = dbSession?.webhookUrl || null;
+  sessions[sessionId].onReceive_webhookUrl =
+    dbSession?.onReceive_webhookUrl || null;
+  sessions[sessionId].onSend_webhookUrl = dbSession?.onSend_webhookUrl || null;
+  sessions[sessionId].onUpdateStatus_webhookUrl =
+    dbSession?.onUpdateStatus_webhookUrl || null;
 
   if (sessions[sessionId].sock) {
     sessions[sessionId].sock.end(undefined);
@@ -55,7 +95,9 @@ export async function startSession({
     sessionId,
     data: {
       ...(name !== undefined ? { name } : {}),
-      webhookUrl: dbSession?.webhookUrl || null,
+      onReceive_webhookUrl: dbSession?.onReceive_webhookUrl || null,
+      onSend_webhookUrl: dbSession?.onSend_webhookUrl || null,
+      onUpdateStatus_webhookUrl: dbSession?.onUpdateStatus_webhookUrl || null,
       connected: false,
       qrCode: null,
     },
@@ -128,14 +170,28 @@ export async function startSession({
     )
       return;
 
-    const parsedMessage = await parseIncomingMessage(msg, sessionId);
+    const parsedMessage = await formatMessageOnReceive(msg, sessionId);
+    console.log(parsedMessage);
 
-    const webhookUrl = sessions[sessionId]!.webhookUrl;
-    if (webhookUrl) {
-      try {
-        await axios.post(webhookUrl, parsedMessage);
-      } catch (err: any) {
-        console.error("Erro webhook:", err?.message);
+    await sendToWebhook(sessionId, parsedMessage, "receive");
+  });
+
+  sock.ev.on("messages.update", async (updates) => {
+    for (const update of updates) {
+      if (update.update.status !== undefined) {
+        const formatted = formatMessageOnUpdate(update, sessionId);
+        const status = formatted.status;
+        const session = sessions[sessionId];
+
+        if (session?.onSend_webhookUrl && status === "RECEIVED") {
+          await sendToWebhook(sessionId, formatted, "send");
+          return;
+        }
+
+        if (session?.onUpdateStatus_webhookUrl) {
+          await sendToWebhook(sessionId, formatted, "update");
+          return;
+        }
       }
     }
   });
@@ -144,22 +200,6 @@ export async function startSession({
 
   sessions[sessionId]!.connecting = false;
 }
-
-export async function createSession({ name }: { name: string }) {
-  if (!name) throw new BadRequestError("Nome da sessão é obrigatório");
-  const sessionId = crypto.randomUUID();
-  await startSession({ sessionId, name });
-  return { sessionId };
-}
-
-export async function getQR({ sessionId }: { sessionId: string }) {
-  const session = sessions[sessionId]!;
-  if (session?.qrCode) return await qrcode.toDataURL(session.qrCode);
-
-  const dbSession = await sessionRepo.findSessionById({ sessionId });
-  return dbSession?.qrCode ? await qrcode.toDataURL(dbSession.qrCode) : null;
-}
-
 export async function sendMessage({
   sessionId,
   to,
@@ -174,20 +214,55 @@ export async function sendMessage({
     throw new NotFoundError("Sessão do usuário não foi encontrada");
 
   await session.sock.sendMessage(`${to}@s.whatsapp.net`, { text: message });
+
+  await sendToWebhook(sessionId, { to, message }, "send");
 }
 
 export async function updateWebhook({
   sessionId,
-  webhookUrl,
+  onReceive_webhookUrl,
+  onSend_webhookUrl,
+  onUpdateStatus_webhookUrl,
 }: {
   sessionId: string;
-  webhookUrl: string;
+  onReceive_webhookUrl?: string | undefined;
+  onSend_webhookUrl?: string | undefined;
+  onUpdateStatus_webhookUrl?: string | undefined;
 }) {
-  const session = sessions[sessionId]!;
+  const session = sessions[sessionId];
   if (!session) throw new NotFoundError("Sessão do usuário não foi encontrada");
 
-  session.webhookUrl = webhookUrl;
-  await sessionRepo.updateSession({ sessionId, data: { webhookUrl } });
+  // Atualiza a sessão em memória, convertendo undefined para null
+  if (onReceive_webhookUrl !== undefined)
+    session.onReceive_webhookUrl = onReceive_webhookUrl ?? null;
+  if (onSend_webhookUrl !== undefined)
+    session.onSend_webhookUrl = onSend_webhookUrl ?? null;
+  if (onUpdateStatus_webhookUrl !== undefined)
+    session.onUpdateStatus_webhookUrl = onUpdateStatus_webhookUrl ?? null;
+
+  // Atualiza no banco de dados, convertendo undefined em null
+  await sessionRepo.updateSession({
+    sessionId,
+    data: {
+      onReceive_webhookUrl: onReceive_webhookUrl ?? null,
+      onSend_webhookUrl: onSend_webhookUrl ?? null,
+      onUpdateStatus_webhookUrl: onUpdateStatus_webhookUrl ?? null,
+    },
+  });
+}
+
+export async function createSession({ name }: { name: string }) {
+  const sessionId = crypto.randomUUID();
+  await startSession({ sessionId, name });
+  return { sessionId };
+}
+
+export async function getQR({ sessionId }: { sessionId: string }) {
+  const session = sessions[sessionId]!;
+  if (session?.qrCode) return await qrcode.toDataURL(session.qrCode);
+
+  const dbSession = await sessionRepo.findSessionById({ sessionId });
+  return dbSession?.qrCode ? await qrcode.toDataURL(dbSession.qrCode) : null;
 }
 
 export async function deleteSession({ sessionId }: { sessionId: string }) {
@@ -269,7 +344,21 @@ export async function loadSessionsOnStartup() {
       name: session.name || undefined,
     });
 
-    sessions[session.id]!.webhookUrl = session.webhookUrl || null;
+    sessions[session.id]!.onReceive_webhookUrl =
+      session.onReceive_webhookUrl ?? null;
+    sessions[session.id]!.onSend_webhookUrl = session.onSend_webhookUrl ?? null;
+    sessions[session.id]!.onUpdateStatus_webhookUrl =
+      session.onUpdateStatus_webhookUrl ?? null;
+
+    await sessionRepo.updateSession({
+      sessionId: session.id,
+      data: {
+        onReceive_webhookUrl: session.onReceive_webhookUrl ?? null,
+        onSend_webhookUrl: session.onSend_webhookUrl ?? null,
+        onUpdateStatus_webhookUrl: session.onUpdateStatus_webhookUrl ?? null,
+      },
+    });
+
     console.log(`✅ Sessão restaurada: ${session.id}`);
   }
 }

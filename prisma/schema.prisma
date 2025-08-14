@@ -8,9 +8,13 @@ generator client {
 }
 
 model Session {
-  id         String  @id
-  name       String?
-  qrCode     String?
-  webhookUrl String?
-  connected  Boolean @default(false)
+  id                        String   @id @unique
+  name                      String?
+  qrCode                    String?
+  onReceive_webhookUrl      String?
+  onSend_webhookUrl         String?
+  onUpdateStatus_webhookUrl String?
+  connected                 Boolean  @default(false)
+  created_at                DateTime @default(now())
+  updated_at              DateTime @updatedAt
 }

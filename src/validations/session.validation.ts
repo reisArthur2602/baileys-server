@@ -18,7 +18,7 @@ export const sendMessageSchema = z.object({
 });
 
 export const setWebhookSchema = z.object({
-  webhookUrl: z
-    .string({ error: "A URL do webhook é obrigatória." })
-    .url({ message: "A URL do webhook é inválida." }),
+  onSend_webhookUrl: z.string().url().optional(),
+  onReceive_webhookUrl: z.string().url().optional(),
+  onUpdateStatus_webhookUrl: z.string().url().optional(),
 });
