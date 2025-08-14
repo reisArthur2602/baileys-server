@@ -2,9 +2,9 @@ import { Router } from "express";
 
 import {
   createSession,
-  getQRCode,
+  getQR,
   sendMessage,
-  setWebhook,
+  updateWebhook,
   deleteSession,
   refreshQR,
   listSessions,
@@ -13,11 +13,12 @@ import {
 
 export const sessionRoutes = Router();
 
-sessionRoutes.post("/session", createSession);
-sessionRoutes.get("/qr/:sessionId", getQRCode);
+sessionRoutes.post("/", createSession);
+
 sessionRoutes.post("/send", sendMessage);
-sessionRoutes.post("/set-webhook", setWebhook);
-sessionRoutes.delete("/session/:sessionId", deleteSession);
-sessionRoutes.patch("/session/:sessionId/logout", logoutSession);
-sessionRoutes.post("/session/refresh-qrcode", refreshQR);
-sessionRoutes.get("/sessions", listSessions);
+sessionRoutes.patch("/webhook", updateWebhook);
+sessionRoutes.delete("/", deleteSession);
+sessionRoutes.patch("/disconnect", logoutSession);
+sessionRoutes.get("/qr", getQR);
+sessionRoutes.patch("/qr/refresh", refreshQR);
+sessionRoutes.get("/all", listSessions);

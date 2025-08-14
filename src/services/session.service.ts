@@ -21,13 +21,13 @@ type SessionStoreItem = {
 const sessions: Record<string, SessionStoreItem> = {};
 const reconnecting: Record<string, boolean> = {};
 
-export async function createSession(name: string) {
-  if (!name) throw new BadRequestError("Nome da sessão é obrigatório");
-  const sessionId = crypto.randomUUID();
-  await startSession(sessionId, name);
-}
-
-export async function startSession(sessionId: string, name?: string) {
+export async function startSession({
+  sessionId,
+  name,
+}: {
+  sessionId: string;
+  name?: string | undefined;
+}) {
   if (sessions[sessionId]?.connecting) {
     console.log(`⚠️ Sessão ${sessionId} já está conectando...`);
     return;
@@ -40,10 +40,10 @@ export async function startSession(sessionId: string, name?: string) {
     connecting: true,
   };
 
-  const dbSession = await sessionRepo.findSessionById(sessionId);
+  const dbSession = await sessionRepo.findSessionById({ sessionId });
   sessions[sessionId].webhookUrl = dbSession?.webhookUrl || null;
 
-  if (sessions[sessionId]?.sock) {
+  if (sessions[sessionId].sock) {
     sessions[sessionId].sock.end(undefined);
     sessions[sessionId].sock.ws?.close();
   }
@@ -52,11 +52,13 @@ export async function startSession(sessionId: string, name?: string) {
   sessions[sessionId].sock = sock;
 
   await sessionRepo.upsertSession({
-    id: sessionId,
-    name: name || dbSession?.name || null,
-    webhookUrl: dbSession?.webhookUrl || null,
-    connected: false,
-    qrCode: null,
+    sessionId,
+    data: {
+      ...(name !== undefined ? { name } : {}),
+      webhookUrl: dbSession?.webhookUrl || null,
+      connected: false,
+      qrCode: null,
+    },
   });
 
   sock.ev.on(
@@ -64,41 +66,40 @@ export async function startSession(sessionId: string, name?: string) {
     async ({ connection, lastDisconnect, qr }) => {
       if (qr && qr !== sessions[sessionId]!.qrCode) {
         sessions[sessionId]!.qrCode = qr;
-        await sessionRepo.updateSession(sessionId, {
-          qrCode: qr,
-          connected: false,
+        await sessionRepo.updateSession({
+          sessionId,
+          data: { qrCode: qr, connected: false },
         });
       }
 
       switch (connection) {
         case "close":
-          if (sessions[sessionId]?.deleting) return;
+          if (sessions[sessionId]!.deleting) return;
 
           const error = lastDisconnect?.error as any;
           const statusCode = error?.output?.statusCode;
 
           if (statusCode === DisconnectReason.loggedOut) {
             console.log(`⚠️ Logout detectado na sessão ${sessionId}.`);
-
-            await sessionRepo.updateSession(sessionId, {
-              connected: false,
-              qrCode: null,
+            await sessionRepo.updateSession({
+              sessionId,
+              data: { connected: false, qrCode: null },
             });
             sessions[sessionId]!.qrCode = null;
             console.log(`ℹ️ Sessão ${sessionId} desconectada.`);
           } else if (!reconnecting[sessionId]) {
             reconnecting[sessionId] = true;
             console.log(`♻️ Reconectando sessão ${sessionId}...`);
-            await startSession(sessionId, name);
+            await startSession({ sessionId, ...(name ? { name } : {}) });
             reconnecting[sessionId] = false;
           }
           break;
 
         case "open":
           sessions[sessionId]!.qrCode = null;
-          await sessionRepo.updateSession(sessionId, {
-            connected: true,
-            qrCode: null,
+          await sessionRepo.updateSession({
+            sessionId,
+            data: { connected: true, qrCode: null },
           });
           console.log(`✅ Sessão ${sessionId} conectada`);
           break;
@@ -128,7 +129,6 @@ export async function startSession(sessionId: string, name?: string) {
       return;
 
     const parsedMessage = await parseIncomingMessage(msg, sessionId);
-    console.log(parsedMessage);
 
     const webhookUrl = sessions[sessionId]!.webhookUrl;
     if (webhookUrl) {
@@ -142,39 +142,56 @@ export async function startSession(sessionId: string, name?: string) {
 
   sock.ev.on("creds.update", saveCreds);
 
-  sessions[sessionId].connecting = false;
+  sessions[sessionId]!.connecting = false;
 }
 
-export async function getQRCode(sessionId: string): Promise<string | null> {
-  const session = sessions[sessionId];
+export async function createSession({ name }: { name: string }) {
+  if (!name) throw new BadRequestError("Nome da sessão é obrigatório");
+  const sessionId = crypto.randomUUID();
+  await startSession({ sessionId, name });
+  return { sessionId };
+}
+
+export async function getQR({ sessionId }: { sessionId: string }) {
+  const session = sessions[sessionId]!;
   if (session?.qrCode) return await qrcode.toDataURL(session.qrCode);
 
-  const dbSession = await sessionRepo.findSessionById(sessionId);
+  const dbSession = await sessionRepo.findSessionById({ sessionId });
   return dbSession?.qrCode ? await qrcode.toDataURL(dbSession.qrCode) : null;
 }
 
-export async function sendMessage(
-  sessionId: string,
-  to: string,
-  message: string
-) {
-  const session = sessions[sessionId];
+export async function sendMessage({
+  sessionId,
+  to,
+  message,
+}: {
+  sessionId: string;
+  to: string;
+  message: string;
+}) {
+  const session = sessions[sessionId]!;
   if (!session || !session.sock)
     throw new NotFoundError("Sessão do usuário não foi encontrada");
 
   await session.sock.sendMessage(`${to}@s.whatsapp.net`, { text: message });
 }
 
-export async function setWebhook(sessionId: string, webhookUrl: string) {
-  const session = sessions[sessionId];
+export async function updateWebhook({
+  sessionId,
+  webhookUrl,
+}: {
+  sessionId: string;
+  webhookUrl: string;
+}) {
+  const session = sessions[sessionId]!;
   if (!session) throw new NotFoundError("Sessão do usuário não foi encontrada");
 
   session.webhookUrl = webhookUrl;
-  await sessionRepo.updateSession(sessionId, { webhookUrl });
+  await sessionRepo.updateSession({ sessionId, data: { webhookUrl } });
 }
 
-export async function deleteSession(sessionId: string) {
-  const session = sessions[sessionId];
+export async function deleteSession({ sessionId }: { sessionId: string }) {
+  const session = sessions[sessionId]!;
   if (!session || !session.sock)
     throw new NotFoundError("Sessão do usuário não foi encontrada");
 
@@ -188,51 +205,55 @@ export async function deleteSession(sessionId: string) {
 
   const sessionPath = path.resolve(`./sessions/${sessionId}`);
   await fs.remove(sessionPath);
-  await sessionRepo.deleteSession(sessionId);
+  await sessionRepo.deleteSession({ sessionId });
 
   delete sessions[sessionId];
   console.log(`✅ Sessão ${sessionId} removida completamente.`);
 }
 
-export async function logoutSession(sessionId: string) {
+export async function logoutSession({ sessionId }: { sessionId: string }) {
   const session = sessions[sessionId];
-  if (!session || !session.sock) {
+  if (!session || !session.sock)
     throw new NotFoundError("Sessão do usuário não foi encontrada");
-  }
 
   await session.sock.logout();
   const sessionPath = path.resolve(`./sessions/${sessionId}`);
   await fs.remove(sessionPath);
 
-  await sessionRepo.updateSession(sessionId, {
-    connected: false,
-    qrCode: null,
+  await sessionRepo.updateSession({
+    sessionId,
+    data: { connected: false, qrCode: null },
   });
 
   delete sessions[sessionId];
 
-  await startSession(sessionId);
+  await startSession({ sessionId });
 
   console.log(`✅ Sessão ${sessionId} deslogada e pronta para novo login.`);
 }
 
-export async function refreshQR(sessionId: string) {
+export async function refreshQR({ sessionId }: { sessionId: string }) {
+  const session = sessions[sessionId];
+
+  if (!session || !session.sock)
+    throw new NotFoundError("Sessão do usuário não foi encontrada");
+
   const sessionPath = path.resolve(`./sessions/${sessionId}`);
 
-  if (sessions[sessionId]?.sock) {
-    sessions[sessionId].sock.end(undefined);
-    sessions[sessionId].sock.ws?.close();
+  if (session.sock) {
+    session.sock.end(undefined);
+    session.sock.ws?.close();
   }
 
   await fs.remove(sessionPath);
   await fs.ensureDir(sessionPath);
 
-  await sessionRepo.updateSession(sessionId, {
-    connected: false,
-    qrCode: null,
+  await sessionRepo.updateSession({
+    sessionId,
+    data: { connected: false, qrCode: null },
   });
 
-  await startSession(sessionId);
+  await startSession({ sessionId });
 }
 
 export async function listSessions() {
@@ -241,8 +262,13 @@ export async function listSessions() {
 
 export async function loadSessionsOnStartup() {
   const savedSessions = await sessionRepo.listSessions();
+
   for (const session of savedSessions) {
-    await startSession(session.id, session.name || undefined);
+    await startSession({
+      sessionId: session.id,
+      name: session.name || undefined,
+    });
+
     sessions[session.id]!.webhookUrl = session.webhookUrl || null;
     console.log(`✅ Sessão restaurada: ${session.id}`);
   }

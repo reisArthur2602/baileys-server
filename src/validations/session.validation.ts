@@ -7,9 +7,6 @@ export const createSessionSchema = z.object({
 });
 
 export const sendMessageSchema = z.object({
-  sessionId: z
-    .string({ error: "O identificador da sessão é obrigatório." })
-    .uuid({ message: "O identificador da sessão é inválido." }),
   to: z
     .string({ error: "O número de telefone é obrigatório." })
     .regex(/^\d{13}$/, {
@@ -21,16 +18,7 @@ export const sendMessageSchema = z.object({
 });
 
 export const setWebhookSchema = z.object({
-  sessionId: z
-    .string({ error: "O identificador da sessão é obrigatório." })
-    .uuid({ message: "O identificador da sessão é inválido." }),
   webhookUrl: z
     .string({ error: "A URL do webhook é obrigatória." })
     .url({ message: "A URL do webhook é inválida." }),
-});
-
-export const sessionIdSchema = z.object({
-  sessionId: z
-    .string({ error: "O identificador da sessão é obrigatório." })
-    .uuid({ message: "O identificador da sessão é inválido." }),
 });
