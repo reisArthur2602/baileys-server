@@ -1,5 +1,8 @@
 import { jidDecode, type proto } from "@whiskeysockets/baileys";
-import { saveMedia } from "./save-media.js";
+import { getMediaBuffer } from "./get-media-buffer.js";
+import { uploadToFtp } from "./upload-ftp.js";
+
+type Sequence = { low: number; high: number; unsigned: boolean };
 
 export async function parseIncomingMessage(
   msg: proto.IWebMessageInfo,
@@ -31,72 +34,137 @@ export async function parseIncomingMessage(
     forwarded,
   };
 
-  // Texto
-  if (messageType === "conversation" || messageType === "extendedTextMessage") {
-    return {
-      ...base,
-      text: {
-        message:
-          msg.message?.conversation ||
-          msg.message?.extendedTextMessage?.text ||
-          "",
-      },
-    };
+  switch (messageType) {
+    case "conversation":
+    case "extendedTextMessage":
+      return {
+        ...base,
+        text: {
+          message:
+            msg.message?.conversation ||
+            msg.message?.extendedTextMessage?.text ||
+            "",
+        },
+      };
+
+    case "locationMessage": {
+      const locMsg = msg.message?.locationMessage;
+      return {
+        ...base,
+        location: {
+          longitude: locMsg?.degreesLongitude || 0,
+          latitude: locMsg?.degreesLatitude || 0,
+          name: locMsg?.name || null,
+          address: locMsg?.address || "",
+          url: "",
+        },
+      };
+    }
+
+    case "liveLocationMessage": {
+      const liveMsg = msg.message?.liveLocationMessage;
+      return {
+        ...base,
+        liveLocation: {
+          longitude: liveMsg?.degreesLongitude || 0,
+          latitude: liveMsg?.degreesLatitude || 0,
+          sequence: liveMsg?.sequenceNumber
+            ? (liveMsg.sequenceNumber as unknown as Sequence)
+            : { low: 0, high: 0, unsigned: false },
+          caption: liveMsg?.caption || "",
+        },
+      };
+    }
+
+    case "documentMessage": {
+      const docMsg = msg.message?.documentMessage;
+      const fileBuffer = await getMediaBuffer(msg);
+      if (!fileBuffer) return;
+      const url = await uploadToFtp(fileBuffer.buffer, fileBuffer.fileName);
+
+      return {
+        ...base,
+        document: {
+          caption: docMsg?.caption || null,
+          documentUrl: url,
+          mimeType: docMsg?.mimetype || "",
+          title: docMsg?.title || "",
+          pageCount: docMsg?.pageCount || 0,
+          fileName: docMsg?.fileName || "",
+        },
+      };
+    }
+
+    case "imageMessage": {
+      const imgMsg = msg.message?.imageMessage;
+      const fileBuffer = await getMediaBuffer(msg);
+      if (!fileBuffer) return;
+      const url = await uploadToFtp(fileBuffer.buffer, fileBuffer.fileName);
+
+      return {
+        ...base,
+        image: {
+          imageUrl: url,
+          thumbnailUrl: url,
+          caption: imgMsg?.caption || "",
+          mimeType: imgMsg?.mimetype || "",
+          viewOnce: imgMsg?.viewOnce || false,
+          width: imgMsg?.width || 0,
+          height: imgMsg?.height || 0,
+        },
+      };
+    }
+
+    case "audioMessage": {
+      const audioMsg = msg.message?.audioMessage;
+      const fileBuffer = await getMediaBuffer(msg);
+      if (!fileBuffer) return;
+      const url = await uploadToFtp(fileBuffer.buffer, fileBuffer.fileName);
+
+      return {
+        ...base,
+        audio: {
+          ptt: audioMsg?.ptt || false,
+          seconds: audioMsg?.seconds || 0,
+          audioUrl: url,
+          mimeType: audioMsg?.mimetype || "",
+          viewOnce: audioMsg?.viewOnce || false,
+        },
+      };
+    }
+
+    case "contactMessage": {
+      const contactMsg = msg.message?.contactMessage;
+      return {
+        ...base,
+        contact: {
+          displayName: contactMsg?.displayName || "",
+          vCard: contactMsg?.vcard || "",
+          phones: [],
+        },
+      };
+    }
+
+    case "contactsArrayMessage": {
+      const contactsArray = msg.message?.contactsArrayMessage?.contacts || [];
+      return {
+        ...base,
+        contact:
+          contactsArray.length > 0
+            ? {
+                displayName: contactsArray[0]?.displayName || "",
+                vCard: contactsArray[0]?.vcard || "",
+                phones: [],
+              }
+            : {
+                displayName: "",
+                vCard: "",
+                phones: [],
+              },
+      };
+    }
+
+    default:
+      return base;
   }
-
-  if (messageType === "locationMessage") {
-    const locMsg = msg.message?.locationMessage;
-    return {
-      ...base,
-      location: {
-        longitude: locMsg?.degreesLongitude || 0,
-        latitude: locMsg?.degreesLatitude || 0,
-        name: locMsg?.name || null,
-        address: locMsg?.address || "",
-        url: "",
-      },
-    };
-  }
-
-  if (messageType === "documentMessage") {
-    const docMsg = msg.message?.documentMessage;
-    const url = await saveMedia(msg);
-
-    // const buffer = await getMediaBuffer(msg);
-    // const url = await uploadToFtp(buffer, docMsg?.fileName!);
-
-    return {
-      ...base,
-      document: {
-        caption: docMsg?.caption || null,
-        documentUrl: url,
-        mimeType: docMsg?.mimetype || "",
-        title: docMsg?.title || "",
-        pageCount: docMsg?.pageCount || 0,
-        fileName: docMsg?.fileName || "",
-      },
-    };
-  }
-
-  if (messageType === "imageMessage") {
-    const imgMsg = msg.message?.imageMessage;
-    const url = await saveMedia(msg);
-    // const buffer = await getMediaBuffer(msg);
-    // const url = await uploadToFtp(buffer, crypto.randomUUID());
-
-    return {
-      ...base,
-      image: {
-        imageUrl: url,
-        thumbnailUrl: url,
-        caption: imgMsg?.caption || "",
-        mimeType: imgMsg?.mimetype || "",
-        viewOnce: imgMsg?.viewOnce || false,
-        width: imgMsg?.width || 0,
-        height: imgMsg?.height || 0,
-      },
-    };
-  }
-
-  return base;
 }
