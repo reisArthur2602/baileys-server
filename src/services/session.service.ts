@@ -4,10 +4,9 @@ import fs from "fs-extra";
 import path from "path";
 import crypto from "crypto";
 import axios from "axios";
-
 import * as sessionRepo from "../repositories/session.repository.js";
 import { formatMessageOnReceive } from "../utils/format-message-on-receive.js";
-import { NotFoundError, BadRequestError } from "../utils/error-handlers.js";
+import { NotFoundError } from "../utils/error-handlers.js";
 import { createBaileysSession } from "../config/baileys.config.js";
 import { formatMessageOnUpdate } from "../utils/format-message-on-update.js";
 
@@ -17,6 +16,7 @@ type SessionStoreItem = {
   onReceive_webhookUrl: string | null;
   onSend_webhookUrl: string | null;
   onUpdateStatus_webhookUrl: string | null;
+  onChangeSession_webhookUrl: string | null;
   connecting?: boolean;
   deleting?: boolean;
 };
@@ -24,16 +24,36 @@ type SessionStoreItem = {
 const sessions: Record<string, SessionStoreItem> = {};
 const reconnecting: Record<string, boolean> = {};
 
+async function updateSessionAndNotify(
+  sessionId: string,
+  data: Record<string, any>
+) {
+  const updated = await sessionRepo.updateSession({ sessionId, data });
+
+  const session = sessions[sessionId];
+  if (session?.onChangeSession_webhookUrl) {
+    await sendToWebhook(
+      sessionId,
+      {
+        session: updated,
+      },
+      "changeSession"
+    );
+  }
+}
+
+// ---------------------
+// Função de envio webhooks
+// ---------------------
 async function sendToWebhook(
   sessionId: string,
   payload: any,
-  type: "receive" | "send" | "update"
+  type: "receive" | "send" | "update" | "changeSession"
 ) {
   const session = sessions[sessionId];
   if (!session) throw new NotFoundError("Sessão do usuário não foi encontrada");
 
   let webhookUrl: string | null = null;
-
   switch (type) {
     case "receive":
       webhookUrl = session.onReceive_webhookUrl;
@@ -44,10 +64,12 @@ async function sendToWebhook(
     case "update":
       webhookUrl = session.onUpdateStatus_webhookUrl;
       break;
+    case "changeSession":
+      webhookUrl = session.onChangeSession_webhookUrl;
+      break;
   }
 
   if (!webhookUrl) return;
-
   try {
     await axios.post(webhookUrl, payload);
   } catch (err: any) {
@@ -55,6 +77,9 @@ async function sendToWebhook(
   }
 }
 
+// ---------------------
+// Iniciar sessão
+// ---------------------
 export async function startSession({
   sessionId,
   name,
@@ -73,6 +98,7 @@ export async function startSession({
     onReceive_webhookUrl: null,
     onSend_webhookUrl: null,
     onUpdateStatus_webhookUrl: null,
+    onChangeSession_webhookUrl: null,
     connecting: true,
   };
 
@@ -82,6 +108,8 @@ export async function startSession({
   sessions[sessionId].onSend_webhookUrl = dbSession?.onSend_webhookUrl || null;
   sessions[sessionId].onUpdateStatus_webhookUrl =
     dbSession?.onUpdateStatus_webhookUrl || null;
+  sessions[sessionId].onChangeSession_webhookUrl =
+    dbSession?.onChangeSession_webhookUrl || null;
 
   if (sessions[sessionId].sock) {
     sessions[sessionId].sock.end(undefined);
@@ -98,6 +126,7 @@ export async function startSession({
       onReceive_webhookUrl: dbSession?.onReceive_webhookUrl || null,
       onSend_webhookUrl: dbSession?.onSend_webhookUrl || null,
       onUpdateStatus_webhookUrl: dbSession?.onUpdateStatus_webhookUrl || null,
+      onChangeSession_webhookUrl: dbSession?.onChangeSession_webhookUrl || null,
       connected: false,
       qrCode: null,
     },
@@ -108,30 +137,38 @@ export async function startSession({
     async ({ connection, lastDisconnect, qr }) => {
       if (qr && qr !== sessions[sessionId]!.qrCode) {
         sessions[sessionId]!.qrCode = qr;
-        await sessionRepo.updateSession({
-          sessionId,
-          data: { qrCode: qr, connected: false },
+        await updateSessionAndNotify(sessionId, {
+          qrCode: qr,
+          connected: false,
         });
       }
 
       switch (connection) {
         case "close":
           if (sessions[sessionId]!.deleting) return;
-
           const error = lastDisconnect?.error as any;
           const statusCode = error?.output?.statusCode;
 
           if (statusCode === DisconnectReason.loggedOut) {
-            console.log(`⚠️ Logout detectado na sessão ${sessionId}.`);
-            await sessionRepo.updateSession({
-              sessionId,
-              data: { connected: false, qrCode: null },
+            await updateSessionAndNotify(sessionId, {
+              connected: false,
+              qrCode: null,
             });
             sessions[sessionId]!.qrCode = null;
             console.log(`ℹ️ Sessão ${sessionId} desconectada.`);
+            await sendToWebhook(
+              sessionId,
+              { event: "logout" },
+              "changeSession"
+            );
           } else if (!reconnecting[sessionId]) {
             reconnecting[sessionId] = true;
             console.log(`♻️ Reconectando sessão ${sessionId}...`);
+            await sendToWebhook(
+              sessionId,
+              { event: "reconnecting" },
+              "changeSession"
+            );
             await startSession({ sessionId, ...(name ? { name } : {}) });
             reconnecting[sessionId] = false;
           }
@@ -139,9 +176,9 @@ export async function startSession({
 
         case "open":
           sessions[sessionId]!.qrCode = null;
-          await sessionRepo.updateSession({
-            sessionId,
-            data: { connected: true, qrCode: null },
+          await updateSessionAndNotify(sessionId, {
+            connected: true,
+            qrCode: null,
           });
           console.log(`✅ Sessão ${sessionId} conectada`);
           break;
@@ -160,7 +197,6 @@ export async function startSession({
       "reactionMessage",
       "ephemeralMessage",
     ];
-
     const messageType = Object.keys(msg.message)[0];
 
     if (
@@ -172,7 +208,6 @@ export async function startSession({
 
     const parsedMessage = await formatMessageOnReceive(msg, sessionId);
     console.log(parsedMessage);
-
     await sendToWebhook(sessionId, parsedMessage, "receive");
   });
 
@@ -197,9 +232,12 @@ export async function startSession({
   });
 
   sock.ev.on("creds.update", saveCreds);
-
   sessions[sessionId]!.connecting = false;
 }
+
+// ---------------------
+// Enviar mensagem
+// ---------------------
 export async function sendMessage({
   sessionId,
   to,
@@ -214,49 +252,57 @@ export async function sendMessage({
     throw new NotFoundError("Sessão do usuário não foi encontrada");
 
   await session.sock.sendMessage(`${to}@s.whatsapp.net`, { text: message });
-
   await sendToWebhook(sessionId, { to, message }, "send");
 }
 
+// ---------------------
+// Atualizar webhooks
+// ---------------------
 export async function updateWebhook({
   sessionId,
   onReceive_webhookUrl,
   onSend_webhookUrl,
   onUpdateStatus_webhookUrl,
+  onChangeSession_webhookUrl,
 }: {
   sessionId: string;
   onReceive_webhookUrl?: string | undefined;
   onSend_webhookUrl?: string | undefined;
   onUpdateStatus_webhookUrl?: string | undefined;
+  onChangeSession_webhookUrl?: string | undefined;
 }) {
   const session = sessions[sessionId];
   if (!session) throw new NotFoundError("Sessão do usuário não foi encontrada");
 
-  // Atualiza a sessão em memória, convertendo undefined para null
   if (onReceive_webhookUrl !== undefined)
     session.onReceive_webhookUrl = onReceive_webhookUrl ?? null;
   if (onSend_webhookUrl !== undefined)
     session.onSend_webhookUrl = onSend_webhookUrl ?? null;
   if (onUpdateStatus_webhookUrl !== undefined)
     session.onUpdateStatus_webhookUrl = onUpdateStatus_webhookUrl ?? null;
+  if (onChangeSession_webhookUrl !== undefined)
+    session.onChangeSession_webhookUrl = onChangeSession_webhookUrl ?? null;
 
-  // Atualiza no banco de dados, convertendo undefined em null
-  await sessionRepo.updateSession({
-    sessionId,
-    data: {
-      onReceive_webhookUrl: onReceive_webhookUrl ?? null,
-      onSend_webhookUrl: onSend_webhookUrl ?? null,
-      onUpdateStatus_webhookUrl: onUpdateStatus_webhookUrl ?? null,
-    },
+  await updateSessionAndNotify(sessionId, {
+    onReceive_webhookUrl: onReceive_webhookUrl ?? null,
+    onSend_webhookUrl: onSend_webhookUrl ?? null,
+    onUpdateStatus_webhookUrl: onUpdateStatus_webhookUrl ?? null,
+    onChangeSession_webhookUrl: onChangeSession_webhookUrl ?? null,
   });
 }
 
+// ---------------------
+// Criar sessão
+// ---------------------
 export async function createSession({ name }: { name: string }) {
   const sessionId = crypto.randomUUID();
   await startSession({ sessionId, name });
   return { sessionId };
 }
 
+// ---------------------
+// Buscar QR
+// ---------------------
 export async function getQR({ sessionId }: { sessionId: string }) {
   const session = sessions[sessionId]!;
   if (session?.qrCode) return await qrcode.toDataURL(session.qrCode);
@@ -265,13 +311,15 @@ export async function getQR({ sessionId }: { sessionId: string }) {
   return dbSession?.qrCode ? await qrcode.toDataURL(dbSession.qrCode) : null;
 }
 
+// ---------------------
+// Deletar sessão
+// ---------------------
 export async function deleteSession({ sessionId }: { sessionId: string }) {
   const session = sessions[sessionId]!;
   if (!session || !session.sock)
     throw new NotFoundError("Sessão do usuário não foi encontrada");
 
   session.deleting = true;
-
   try {
     await session.sock.logout();
   } catch (err) {
@@ -280,41 +328,42 @@ export async function deleteSession({ sessionId }: { sessionId: string }) {
 
   const sessionPath = path.resolve(`./sessions/${sessionId}`);
   await fs.remove(sessionPath);
-  await sessionRepo.deleteSession({ sessionId });
 
+  await sessionRepo.deleteSession({ sessionId });
   delete sessions[sessionId];
+
   console.log(`✅ Sessão ${sessionId} removida completamente.`);
 }
 
+// ---------------------
+// Logout sessão
+// ---------------------
 export async function logoutSession({ sessionId }: { sessionId: string }) {
   const session = sessions[sessionId];
   if (!session || !session.sock)
     throw new NotFoundError("Sessão do usuário não foi encontrada");
 
   await session.sock.logout();
+
   const sessionPath = path.resolve(`./sessions/${sessionId}`);
   await fs.remove(sessionPath);
-
-  await sessionRepo.updateSession({
-    sessionId,
-    data: { connected: false, qrCode: null },
-  });
+  await updateSessionAndNotify(sessionId, { connected: false, qrCode: null });
 
   delete sessions[sessionId];
-
   await startSession({ sessionId });
 
   console.log(`✅ Sessão ${sessionId} deslogada e pronta para novo login.`);
 }
 
+// ---------------------
+// Refresh QR
+// ---------------------
 export async function refreshQR({ sessionId }: { sessionId: string }) {
   const session = sessions[sessionId];
-
   if (!session || !session.sock)
     throw new NotFoundError("Sessão do usuário não foi encontrada");
 
   const sessionPath = path.resolve(`./sessions/${sessionId}`);
-
   if (session.sock) {
     session.sock.end(undefined);
     session.sock.ws?.close();
@@ -322,22 +371,23 @@ export async function refreshQR({ sessionId }: { sessionId: string }) {
 
   await fs.remove(sessionPath);
   await fs.ensureDir(sessionPath);
-
-  await sessionRepo.updateSession({
-    sessionId,
-    data: { connected: false, qrCode: null },
-  });
+  await updateSessionAndNotify(sessionId, { connected: false, qrCode: null });
 
   await startSession({ sessionId });
 }
 
+// ---------------------
+// Listar sessões
+// ---------------------
 export async function listSessions() {
   return sessionRepo.listSessions();
 }
 
+// ---------------------
+// Restaurar sessões
+// ---------------------
 export async function loadSessionsOnStartup() {
   const savedSessions = await sessionRepo.listSessions();
-
   for (const session of savedSessions) {
     await startSession({
       sessionId: session.id,
@@ -349,14 +399,14 @@ export async function loadSessionsOnStartup() {
     sessions[session.id]!.onSend_webhookUrl = session.onSend_webhookUrl ?? null;
     sessions[session.id]!.onUpdateStatus_webhookUrl =
       session.onUpdateStatus_webhookUrl ?? null;
+    sessions[session.id]!.onChangeSession_webhookUrl =
+      session.onChangeSession_webhookUrl ?? null;
 
-    await sessionRepo.updateSession({
-      sessionId: session.id,
-      data: {
-        onReceive_webhookUrl: session.onReceive_webhookUrl ?? null,
-        onSend_webhookUrl: session.onSend_webhookUrl ?? null,
-        onUpdateStatus_webhookUrl: session.onUpdateStatus_webhookUrl ?? null,
-      },
+    await updateSessionAndNotify(session.id, {
+      onReceive_webhookUrl: session.onReceive_webhookUrl ?? null,
+      onSend_webhookUrl: session.onSend_webhookUrl ?? null,
+      onUpdateStatus_webhookUrl: session.onUpdateStatus_webhookUrl ?? null,
+      onChangeSession_webhookUrl: session.onChangeSession_webhookUrl ?? null,
     });
 
     console.log(`✅ Sessão restaurada: ${session.id}`);

@@ -21,4 +21,5 @@ export const setWebhookSchema = z.object({
   onSend_webhookUrl: z.string().url().optional(),
   onReceive_webhookUrl: z.string().url().optional(),
   onUpdateStatus_webhookUrl: z.string().url().optional(),
+  onChangeSession_webhookUrl: z.string().url().optional(),
 });

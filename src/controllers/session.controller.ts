@@ -32,14 +32,20 @@ export async function sendMessage(request: Request, response: Response) {
 export async function updateWebhook(request: Request, response: Response) {
   const sessionId = await getSessionFromHeader(request);
 
-  const { onSend_webhookUrl, onReceive_webhookUrl, onUpdateStatus_webhookUrl } =
-    setWebhookSchema.parse(request.body);
+  const {
+    onSend_webhookUrl,
+    onReceive_webhookUrl,
+    onUpdateStatus_webhookUrl,
+    onChangeSession_webhookUrl,
+  } = setWebhookSchema.parse(request.body);
+
 
   await sessionService.updateWebhook({
     sessionId,
-    onSend_webhookUrl: onSend_webhookUrl,
-    onReceive_webhookUrl: onReceive_webhookUrl,
-    onUpdateStatus_webhookUrl: onUpdateStatus_webhookUrl,
+    onSend_webhookUrl,
+    onReceive_webhookUrl,
+    onUpdateStatus_webhookUrl,
+    onChangeSession_webhookUrl,
   });
 
   response.sendStatus(StatusCodes.OK);
