@@ -1,3 +1,5 @@
+import http from "http";
+import https from "https";
 import { DisconnectReason, type WASocket } from "@whiskeysockets/baileys";
 import qrcode from "qrcode";
 import fs from "fs-extra";
@@ -9,6 +11,7 @@ import { formatMessageOnReceive } from "../utils/format-message-on-receive.js";
 import { NotFoundError } from "../utils/error-handlers.js";
 import { createBaileysSession } from "../config/baileys.config.js";
 import { formatMessageOnUpdate } from "../utils/format-message-on-update.js";
+import { axiosInstance } from "../config/axios-config.js";
 
 type SessionStoreItem = {
   sock?: WASocket;
@@ -45,6 +48,7 @@ async function updateSessionAndNotify(
 // ---------------------
 // Função de envio webhooks
 // ---------------------
+// ---------------------
 async function sendToWebhook(
   sessionId: string,
   payload: any,
@@ -70,11 +74,17 @@ async function sendToWebhook(
   }
 
   if (!webhookUrl) return;
-  try {
-    await axios.post(webhookUrl, payload);
-  } catch (err: any) {
-    console.error(`Erro webhook (${type}):`, err.message);
-  }
+
+  const start = Date.now();
+
+ 
+  axiosInstance.post(webhookUrl, payload).then(() => {
+    console.log(
+      `[Webhook ${type}] enviado para ${webhookUrl} em ${Date.now() - start}ms`
+    );
+  }).catch((err) => {
+    console.error(`Erro webhook (${type}) -> ${webhookUrl}:`, err.message);
+  });
 }
 
 // ---------------------
@@ -300,9 +310,7 @@ export async function createSession({ name }: { name: string }) {
   return { sessionId };
 }
 
-// ---------------------
-// Buscar QR
-// ---------------------
+
 export async function getQR({ sessionId }: { sessionId: string }) {
   const session = sessions[sessionId]!;
   if (session?.qrCode) return await qrcode.toDataURL(session.qrCode);
